@@ -216,6 +216,21 @@ func (c *keyController) checkAndCreateKeys(ctx context.Context, syncContext fact
 		reasons = []string{*commonReason} // don't repeat reasons
 	}
 
+	if currentMode == state.KMS {
+		// TODO: KMS TP: run a KMSKeyController that will:
+		// 1. deploy the KMS plugin
+		// 2. wait for the plugin to be ready
+		// 3. create a empty key secret
+
+		// TODO: KMS GA: run a KMSKeyController that will:
+		// 1. deploy the KMS plugin and set status to progressing
+		// 2. wait for the plugin to be ready
+		// 3. generate seed
+		// 4. encrypt seed via the KMS
+		// 5. create a key secret with the encrypted seed
+		// 6. remove progressing status
+	}
+
 	sort.Sort(sort.StringSlice(reasons))
 	internalReason := strings.Join(reasons, ", ")
 	keySecret, err := c.generateKeySecret(newKeyID, currentMode, internalReason, externalReason)

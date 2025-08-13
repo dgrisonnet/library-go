@@ -2,9 +2,12 @@ package encryptionconfig
 
 import (
 	"encoding/base64"
+	"fmt"
 	"sort"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	apiserverconfigv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"k8s.io/klog/v2"
@@ -12,6 +15,15 @@ import (
 	"github.com/openshift/library-go/pkg/operator/encryption/crypto"
 	"github.com/openshift/library-go/pkg/operator/encryption/secrets"
 	"github.com/openshift/library-go/pkg/operator/encryption/state"
+)
+
+const (
+	// KMSPluginEndpointFmt holds the unix socket path where the KMS plugin would be run
+	// uniquely distinguished by the kms plugin hash
+	KMSPluginEndpointFmt = "unix:///var/kube-kms/%s/socket.sock"
+
+	// KMSPluginTimeout fixed timeout
+	KMSPluginTimeout = 5 * time.Second
 )
 
 var (
@@ -106,6 +118,19 @@ func ToEncryptionState(encryptionConfig *apiserverconfigv1.EncryptionConfigurati
 					Mode: s,
 				}
 
+			case provider.KMS != nil:
+				// only KMSv2 is allowed
+				if provider.KMS.APIVersion != "v2" {
+					klog.Infof("skipping invalid KMS provider with APIVersion %s, expected KMS v2", provider.KMS.APIVersion)
+					continue // should never happen
+				}
+
+				ks = state.KeyState{
+					// TODO: KMS GA: add encrypted seed as key
+					Key:  apiserverconfigv1.Key{},
+					Mode: state.KMS,
+				}
+
 			default:
 				klog.Infof("skipping invalid provider index %d for resource %s", i, resourceConfig.Resources[0])
 				continue // should never happen
@@ -179,6 +204,21 @@ func stateToProviders(desired state.GroupResourceState) []apiserverconfigv1.Prov
 			providers = append(providers, apiserverconfigv1.ProviderConfiguration{
 				Secretbox: &apiserverconfigv1.SecretboxConfiguration{
 					Keys: []apiserverconfigv1.Key{key.Key},
+				},
+			})
+		case state.KMS:
+			// FIXME: get name of the provider
+			name := "kms-provider"
+			providers = append(providers, apiserverconfigv1.ProviderConfiguration{
+				KMS: &apiserverconfigv1.KMSConfiguration{
+					APIVersion: "v2",
+					// FIXME: generate name
+					Name: name,
+					// FIXME: put generated name here
+					Endpoint: fmt.Sprintf(KMSPluginEndpointFmt, name),
+					Timeout: &metav1.Duration{
+						Duration: KMSPluginTimeout,
+					},
 				},
 			})
 		case state.Identity:

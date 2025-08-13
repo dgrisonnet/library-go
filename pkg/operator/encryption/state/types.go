@@ -59,7 +59,8 @@ const (
 	AESCBC    Mode = "aescbc" // available from the first release, see defaultMode below
 	AESGCM    Mode = "aesgcm"
 	SecretBox Mode = "secretbox" // available from the first release, see defaultMode below
-	Identity  Mode = "identity"  // available from the first release, see defaultMode below
+	KMS       Mode = "KMS"
+	Identity  Mode = "identity" // available from the first release, see defaultMode below
 
 	// Changing this value requires caution to not break downgrades.
 	// Specifically, if some new Mode is released in version X, that new Mode cannot

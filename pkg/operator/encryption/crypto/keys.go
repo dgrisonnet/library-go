@@ -11,6 +11,7 @@ var (
 		state.AESCBC:    NewAES256Key,
 		state.AESGCM:    NewAES256Key,
 		state.SecretBox: NewAES256Key, // secretbox requires a 32 byte key so we can reuse the same function here
+		state.KMS:       NewKMSKey,
 		state.Identity:  NewIdentityKey,
 	}
 )
@@ -21,6 +22,11 @@ func NewAES256Key() []byte {
 		panic(err) // rand should never fail
 	}
 	return b
+}
+
+func NewKMSKey() []byte {
+	// TODO: KMS GA: generate and encrypt seed
+	return make([]byte, 0)
 }
 
 func NewIdentityKey() []byte {
