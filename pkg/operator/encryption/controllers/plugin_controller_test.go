@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 	clocktesting "k8s.io/utils/clock/testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -156,36 +157,53 @@ func TestPluginController(t *testing.T) {
 
 func TestPluginControllerPodManagement(t *testing.T) {
 	testCases := []struct {
-		name            string
-		targetNamespace string
-		managementState operatorv1.ManagementState
-		apiserverConfig *configv1.APIServer
-		initialObjects  []runtime.Object
-		expectedError   error
+		name             string
+		targetNamespace  string
+		managementState  operatorv1.ManagementState
+		encryptionConfig configv1.APIServerEncryption
+		initialObjects   []runtime.Object
+		expectedError    error
+		actionMatcher    func(actions []ktesting.Action) (string, bool)
 	}{
 		{
 			name:            "creates installer pod when kms static pod doesn't exist",
 			targetNamespace: "openshift-apiserver",
 			managementState: operatorv1.Managed,
-			apiserverConfig: &configv1.APIServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
-				Spec: configv1.APIServerSpec{
-					Encryption: configv1.APIServerEncryption{
-						Type: configv1.EncryptionTypeKMS,
-						KMS: &configv1.KMSConfig{
-							Type: configv1.AWSKMSProvider,
-							AWS: &configv1.AWSKMSConfig{
-								Region: "us-east-1",
-								KeyARN: "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
-							},
-						},
+			encryptionConfig: configv1.APIServerEncryption{
+				Type: configv1.EncryptionTypeKMS,
+				KMS: &configv1.KMSConfig{
+					Type: configv1.AWSKMSProvider,
+					AWS: &configv1.AWSKMSConfig{
+						Region: "us-east-1",
+						KeyARN: "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
 					},
 				},
+			},
+			actionMatcher: func(actions []ktesting.Action) (string, bool) {
+				if len(actions) != 1 {
+					return "expected installer pod to have been created, but no action was taken on fakeKubeClient", false
+				}
+				action := actions[0]
+				if !action.Matches("create", "pods") {
+					msg := fmt.Sprintf(
+						"expected controller sync to have taken action with verb: create on resource: pods, but got verb: %s on resource: %s",
+						action.GetVerb(), action.GetResource(),
+					)
+					return msg, false
+				}
+				return "", true
 			},
 		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			apiserverConfig := &configv1.APIServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+				Spec: configv1.APIServerSpec{
+					Encryption: tc.encryptionConfig,
+				},
+			}
+
 			var triggerStatusErrorFn func(string, *operatorv1.StaticPodOperatorStatus) error
 			if tc.expectedError != nil {
 				triggerStatusErrorFn = func(rv string, spec *operatorv1.StaticPodOperatorStatus) error {
@@ -210,10 +228,7 @@ func TestPluginControllerPodManagement(t *testing.T) {
 			fakeSecretClient := fakeKubeClient.CoreV1()
 			fakePodsGetter := fakeKubeClient.CoreV1()
 
-			fakeConfigClient := configv1clientfake.NewClientset()
-			if tc.apiserverConfig != nil {
-				fakeConfigClient = configv1clientfake.NewClientset(tc.apiserverConfig)
-			}
+			fakeConfigClient := configv1clientfake.NewClientset(apiserverConfig)
 			fakeApiServerClient := fakeConfigClient.ConfigV1().APIServers()
 			fakeApiServerInformer := configv1informers.NewSharedInformerFactory(fakeConfigClient, time.Minute).Config().V1().APIServers()
 
@@ -251,15 +266,9 @@ func TestPluginControllerPodManagement(t *testing.T) {
 				t.Fatalf("unexpected sync error: %s", err)
 			}
 
-			// TODO: parameterize the below assertions
-			actions := fakeKubeClient.Actions()
-			if len(actions) != 1 {
-				t.Fatalf("expected installer pod to have been created, but no action was taken on fakeKubeClient")
-			}
-			action := actions[0]
-			if !action.Matches("create", "pods") {
-				t.Logf("action verb: %s, resource: %s\n", action.GetVerb(), action.GetResource())
-				t.Fatalf("expected controller sync to have created installer pod, but wrong action was taken on resource")
+			msg, passed := tc.actionMatcher(fakeKubeClient.Actions())
+			if !passed {
+				t.Fatal(msg)
 			}
 
 			// _, status, _, _ := fakeOperatorClient.GetStaticPodOperatorState()
