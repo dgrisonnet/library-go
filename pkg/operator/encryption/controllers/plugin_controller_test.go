@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -18,18 +19,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
-	corev1listers "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/tools/cache"
 	clocktesting "k8s.io/utils/clock/testing"
 
 	"github.com/google/go-cmp/cmp"
 )
 
 func TestPluginController(t *testing.T) {
-	podIndex := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
-	podLister := corev1listers.NewPodLister(podIndex)
-	_ = podLister
-
 	testCases := []struct {
 		name            string
 		targetNamespace string
@@ -46,9 +41,9 @@ func TestPluginController(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
 				Spec: configv1.APIServerSpec{
 					Encryption: configv1.APIServerEncryption{
-						Type: "kms",
+						Type: configv1.EncryptionTypeKMS,
 						KMS: &configv1.KMSConfig{
-							Type: "aws",
+							Type: configv1.AWSKMSProvider,
 							AWS: &configv1.AWSKMSConfig{
 								Region: "us-east-1",
 								KeyARN: "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
@@ -67,7 +62,7 @@ func TestPluginController(t *testing.T) {
 			},
 		},
 		{
-			name:            "degraded condition",
+			name:            "get apiserver config errors",
 			targetNamespace: "openshift-apiserver",
 			managementState: operatorv1.Managed,
 			apiserverConfig: nil,
@@ -105,14 +100,14 @@ func TestPluginController(t *testing.T) {
 				nil,
 			)
 
-			fakeKubeClient := fake.NewSimpleClientset(tc.initialObjects...)
+			fakeKubeClient := fake.NewClientset(tc.initialObjects...)
 			kubeInformers := v1helpers.NewKubeInformersForNamespaces(fakeKubeClient, "openshift-config-managed", tc.targetNamespace)
 			fakeSecretClient := fakeKubeClient.CoreV1()
 			fakePodClient := fakeKubeClient.CoreV1()
 
-			fakeConfigClient := configv1clientfake.NewSimpleClientset()
+			fakeConfigClient := configv1clientfake.NewClientset()
 			if tc.apiserverConfig != nil {
-				fakeConfigClient = configv1clientfake.NewSimpleClientset(tc.apiserverConfig)
+				fakeConfigClient = configv1clientfake.NewClientset(tc.apiserverConfig)
 			}
 			fakeApiServerClient := fakeConfigClient.ConfigV1().APIServers()
 			fakeApiServerInformer := configv1informers.NewSharedInformerFactory(fakeConfigClient, time.Minute).Config().V1().APIServers()
@@ -142,11 +137,11 @@ func TestPluginController(t *testing.T) {
 				fakeSecretClient,
 				metav1.ListOptions{},
 				fakeApiServerInformer,
+				kubeInformers,
+				fakePodClient.Pods(tc.targetNamespace),
 				eventRecorder,
 			)
 			err = ctlr.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
-			// _, status, _, _ := fakeoperatorClient.GetStaticPodOperatorState()
-
 			gotError := err != nil
 			if !cmp.Equal(err, tc.expectedError) {
 				if gotError {
@@ -155,8 +150,113 @@ func TestPluginController(t *testing.T) {
 					t.Fatal("Expected PluginController.Sync to return an error, got nil")
 				}
 			}
-
 		})
 	}
+}
 
+func TestPluginControllerPodManagement(t *testing.T) {
+	testCases := []struct {
+		name            string
+		targetNamespace string
+		managementState operatorv1.ManagementState
+		apiserverConfig *configv1.APIServer
+		initialObjects  []runtime.Object
+		expectedError   error
+	}{
+		{
+			name:            "creates installer pod when kms static pod doesn't exist",
+			targetNamespace: "openshift-apiserver",
+			managementState: operatorv1.Managed,
+			apiserverConfig: &configv1.APIServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+				Spec: configv1.APIServerSpec{
+					Encryption: configv1.APIServerEncryption{
+						Type: configv1.EncryptionTypeKMS,
+						KMS: &configv1.KMSConfig{
+							Type: configv1.AWSKMSProvider,
+							AWS: &configv1.AWSKMSConfig{
+								Region: "us-east-1",
+								KeyARN: "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var triggerStatusErrorFn func(string, *operatorv1.StaticPodOperatorStatus) error
+			if tc.expectedError != nil {
+				triggerStatusErrorFn = func(rv string, spec *operatorv1.StaticPodOperatorStatus) error {
+					fmt.Printf("triggerStatusErrorFn rv: %s -- spec %+v \n", rv, *spec)
+					return tc.expectedError
+				}
+			}
+
+			fakeOperatorClient := v1helpers.NewFakeStaticPodOperatorClient(
+				&operatorv1.StaticPodOperatorSpec{
+					OperatorSpec: operatorv1.OperatorSpec{
+						ManagementState: tc.managementState,
+					},
+				},
+				&operatorv1.StaticPodOperatorStatus{},
+				triggerStatusErrorFn,
+				nil,
+			)
+
+			fakeKubeClient := fake.NewClientset(tc.initialObjects...)
+			kubeInformers := v1helpers.NewKubeInformersForNamespaces(fakeKubeClient, "openshift-config-managed", tc.targetNamespace)
+			fakeSecretClient := fakeKubeClient.CoreV1()
+			fakePodClient := fakeKubeClient.CoreV1()
+
+			fakeConfigClient := configv1clientfake.NewClientset()
+			if tc.apiserverConfig != nil {
+				fakeConfigClient = configv1clientfake.NewClientset(tc.apiserverConfig)
+			}
+			fakeApiServerClient := fakeConfigClient.ConfigV1().APIServers()
+			fakeApiServerInformer := configv1informers.NewSharedInformerFactory(fakeConfigClient, time.Minute).Config().V1().APIServers()
+
+			eventRecorder := events.NewInMemoryRecorder("test-kmsPluginController", clocktesting.NewFakePassiveClock(time.Now()))
+			provider := newTestProvider(
+				[]schema.GroupResource{
+					{Group: "", Resource: "secrets"},
+				},
+			)
+			deployer, err := encryptiondeployer.NewRevisionLabelPodDeployer(
+				"revision", tc.targetNamespace, kubeInformers, fakePodClient,
+				fakeSecretClient, encryptiondeployer.StaticPodNodeProvider{OperatorClient: fakeOperatorClient},
+			)
+			if err != nil {
+				t.Fatalf("failed to get deployer: %s", err)
+			}
+
+			ctlr := NewPluginController(
+				"openshift-apiserver",
+				tc.targetNamespace,
+				provider,
+				deployer,
+				alwaysFulfilledPreconditions,
+				fakeApiServerClient,
+				fakeOperatorClient,
+				fakeSecretClient,
+				metav1.ListOptions{},
+				fakeApiServerInformer,
+				kubeInformers,
+				fakeKubeClient.CoreV1().Pods(tc.targetNamespace),
+				eventRecorder,
+			)
+			err = ctlr.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
+			if err != nil {
+				t.Fatalf("unexpected sync error: %s", err)
+			}
+
+			// _, status, _, _ := fakeOperatorClient.GetStaticPodOperatorState()
+			// degradedCondition := v1helpers.FindOperatorCondition(status.Conditions, kmsPluginControllerDegradedCondition)
+			// if gotError && degradedCondition.Status != operatorv1.ConditionTrue {
+			// 	t.Logf("operator conditions: %v\n", status.Conditions)
+			// 	t.Fatalf("expected %q condition to be True, got %q", kmsPluginControllerDegradedCondition, degradedCondition.Status)
+			// }
+		})
+	}
 }

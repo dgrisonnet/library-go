@@ -125,6 +125,11 @@ func CreateDummyKubeAPIPodInUnknownPhase(name, namespace string, nodeName string
 	return p
 }
 
+func CreateDummyKMSPod(name, namespace string, nodeName string) *corev1.Pod {
+	//pod := resourceread.ReadPodV1OrDie(podTemplate)
+	return nil
+}
+
 func ValidateActionsVerbs(actualActions []clientgotesting.Action, expectedActions []string) error {
 	if len(actualActions) != len(expectedActions) {
 		return fmt.Errorf("expected to get %d actions but got %d\nexpected=%v \n got=%v", len(expectedActions), len(actualActions), expectedActions, actionStrings(actualActions))
