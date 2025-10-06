@@ -103,7 +103,7 @@ func TestPluginController(t *testing.T) {
 			fakeKubeClient := fake.NewClientset(tc.initialObjects...)
 			kubeInformers := v1helpers.NewKubeInformersForNamespaces(fakeKubeClient, "openshift-config-managed", tc.targetNamespace)
 			fakeSecretClient := fakeKubeClient.CoreV1()
-			fakePodClient := fakeKubeClient.CoreV1()
+			fakePodsGetter := fakeKubeClient.CoreV1()
 
 			fakeConfigClient := configv1clientfake.NewClientset()
 			if tc.apiserverConfig != nil {
@@ -119,7 +119,7 @@ func TestPluginController(t *testing.T) {
 				},
 			)
 			deployer, err := encryptiondeployer.NewRevisionLabelPodDeployer(
-				"revision", tc.targetNamespace, kubeInformers, fakePodClient,
+				"revision", tc.targetNamespace, kubeInformers, fakePodsGetter,
 				fakeSecretClient, encryptiondeployer.StaticPodNodeProvider{OperatorClient: fakeOperatorClient},
 			)
 			if err != nil {
@@ -138,7 +138,7 @@ func TestPluginController(t *testing.T) {
 				metav1.ListOptions{},
 				fakeApiServerInformer,
 				kubeInformers,
-				fakePodClient.Pods(tc.targetNamespace),
+				fakeKubeClient.CoreV1().Pods(tc.targetNamespace),
 				eventRecorder,
 			)
 			err = ctlr.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
@@ -208,7 +208,7 @@ func TestPluginControllerPodManagement(t *testing.T) {
 			fakeKubeClient := fake.NewClientset(tc.initialObjects...)
 			kubeInformers := v1helpers.NewKubeInformersForNamespaces(fakeKubeClient, "openshift-config-managed", tc.targetNamespace)
 			fakeSecretClient := fakeKubeClient.CoreV1()
-			fakePodClient := fakeKubeClient.CoreV1()
+			fakePodsGetter := fakeKubeClient.CoreV1()
 
 			fakeConfigClient := configv1clientfake.NewClientset()
 			if tc.apiserverConfig != nil {
@@ -224,7 +224,7 @@ func TestPluginControllerPodManagement(t *testing.T) {
 				},
 			)
 			deployer, err := encryptiondeployer.NewRevisionLabelPodDeployer(
-				"revision", tc.targetNamespace, kubeInformers, fakePodClient,
+				"revision", tc.targetNamespace, kubeInformers, fakePodsGetter,
 				fakeSecretClient, encryptiondeployer.StaticPodNodeProvider{OperatorClient: fakeOperatorClient},
 			)
 			if err != nil {
@@ -249,6 +249,17 @@ func TestPluginControllerPodManagement(t *testing.T) {
 			err = ctlr.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
 			if err != nil {
 				t.Fatalf("unexpected sync error: %s", err)
+			}
+
+			// TODO: parameterize the below assertions
+			actions := fakeKubeClient.Actions()
+			if len(actions) != 1 {
+				t.Fatalf("expected installer pod to have been created, but no action was taken on fakeKubeClient")
+			}
+			action := actions[0]
+			if !action.Matches("create", "pods") {
+				t.Logf("action verb: %s, resource: %s\n", action.GetVerb(), action.GetResource())
+				t.Fatalf("expected controller sync to have created installer pod, but wrong action was taken on resource")
 			}
 
 			// _, status, _, _ := fakeOperatorClient.GetStaticPodOperatorState()

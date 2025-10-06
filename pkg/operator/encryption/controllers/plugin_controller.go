@@ -24,7 +24,7 @@ import (
 	corev1lister "k8s.io/client-go/listers/core/v1"
 )
 
-//go:embed ../../staticpod/controller/installer/manifests/installer-pod.yaml
+//go:embed manifests/installer-pod.yaml
 var installerPodTemplate []byte
 
 const (
