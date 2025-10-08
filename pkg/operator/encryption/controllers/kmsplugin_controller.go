@@ -7,25 +7,24 @@ import (
 	"strings"
 	"time"
 
-	configv1 "github.com/openshift/api/config/v1"
-	operatorv1 "github.com/openshift/api/operator/v1"
-	configv1client "github.com/openshift/client-go/config/clientset/versioned/typed/config/v1"
-	configv1informers "github.com/openshift/client-go/config/informers/externalversions/config/v1"
-
-	applyoperatorv1 "github.com/openshift/client-go/operator/applyconfigurations/operator/v1"
-	"github.com/openshift/library-go/pkg/controller/factory"
-	"github.com/openshift/library-go/pkg/operator/encryption/statemachine"
-	"github.com/openshift/library-go/pkg/operator/events"
-	"github.com/openshift/library-go/pkg/operator/resource/resourceread"
-	operatorv1helpers "github.com/openshift/library-go/pkg/operator/v1helpers"
+	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	corev1lister "k8s.io/client-go/listers/core/v1"
-)
 
-//go:embed manifests/installer-pod.yaml
-var installerPodTemplate []byte
+	configv1 "github.com/openshift/api/config/v1"
+	operatorv1 "github.com/openshift/api/operator/v1"
+	configv1client "github.com/openshift/client-go/config/clientset/versioned/typed/config/v1"
+	configv1informers "github.com/openshift/client-go/config/informers/externalversions/config/v1"
+	applyoperatorv1 "github.com/openshift/client-go/operator/applyconfigurations/operator/v1"
+
+	"github.com/openshift/library-go/pkg/controller/factory"
+	"github.com/openshift/library-go/pkg/operator/encryption/statemachine"
+	"github.com/openshift/library-go/pkg/operator/events"
+	operatorv1helpers "github.com/openshift/library-go/pkg/operator/v1helpers"
+)
 
 const (
 	kmsPluginControllerDegradedCondition = "EncryptionKMSPluginControllerDegraded"
@@ -33,49 +32,51 @@ const (
 	kmsPluginPodBaseName = "%s-kms-plugin"
 )
 
-type pluginController struct {
+type kmsPluginController struct {
 	instanceName           string
 	targetNamespace        string
 	controllerInstanceName string
 
-	operatorClient  operatorv1helpers.OperatorClient
-	secretClient    corev1client.SecretsGetter
-	apiServerClient configv1client.APIServerInterface
-	podLister       corev1lister.PodLister
-	podsClient      corev1client.PodInterface
+	operatorClient   operatorv1helpers.OperatorClient
+	secretClient     corev1client.SecretsGetter
+	apiserverClient  configv1client.APIServerInterface
+	podLister        corev1lister.PodLister
+	configMapsClient corev1client.ConfigMapsGetter
 
 	deployer                 statemachine.Deployer
 	provider                 Provider
 	preconditionsFulfilledFn preconditionsFulfilled
+	eventRecorder            events.Recorder
 }
 
-func NewPluginController(
+func NewKMSPluginController(
 	instanceName string,
 	targetNamespace string,
 	provider Provider,
 	deployer statemachine.Deployer,
 	preconditionsFulfilledFn preconditionsFulfilled,
-	apiServerClient configv1client.APIServerInterface,
+	apiserverClient configv1client.APIServerInterface,
 	operatorClient operatorv1helpers.OperatorClient,
 	secretClient corev1client.SecretsGetter,
 	encryptionSecretSelector metav1.ListOptions,
 	apiServerInformer configv1informers.APIServerInformer,
 	kubeInformersForNamespaces operatorv1helpers.KubeInformersForNamespaces,
-	podsClient corev1client.PodInterface,
+	configMapsClient corev1client.ConfigMapsGetter,
 	eventRecorder events.Recorder,
 ) factory.Controller {
 	podInformer := kubeInformersForNamespaces.InformersFor(targetNamespace).Core().V1().Pods()
-	c := pluginController{
+	c := kmsPluginController{
 		instanceName:           instanceName,
 		controllerInstanceName: factory.ControllerInstanceName(instanceName, "KMSPlugin"),
 		targetNamespace:        targetNamespace,
-		operatorClient:         operatorClient,
-		apiServerClient:        apiServerClient,
-		podLister:              podInformer.Lister(),
-		podsClient:             podsClient,
+
+		operatorClient:   operatorClient,
+		apiserverClient:  apiserverClient,
+		configMapsClient: configMapsClient,
 
 		provider:                 provider,
 		preconditionsFulfilledFn: preconditionsFulfilledFn,
+		eventRecorder:            eventRecorder,
 	}
 
 	return factory.New().
@@ -93,7 +94,7 @@ func NewPluginController(
 	)
 }
 
-func (c *pluginController) sync(ctx context.Context, syncCtx factory.SyncContext) (err error) {
+func (c *kmsPluginController) sync(ctx context.Context, syncCtx factory.SyncContext) (err error) {
 	// The status for this condition is intentionally omitted to ensure it's correctly set in each branch
 	degradedCondition := applyoperatorv1.OperatorCondition().
 		WithType(kmsPluginControllerDegradedCondition)
@@ -118,7 +119,7 @@ func (c *pluginController) sync(ctx context.Context, syncCtx factory.SyncContext
 		return err // we will get re-kicked when the operator status updates
 	}
 
-	apiServer, err := c.apiServerClient.Get(ctx, "cluster", metav1.GetOptions{})
+	apiServer, err := c.apiserverClient.Get(ctx, "cluster", metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -128,16 +129,35 @@ func (c *pluginController) sync(ctx context.Context, syncCtx factory.SyncContext
 	}
 	switch kmsConfig.Type {
 	case configv1.AWSKMSProvider:
-		pod := resourceread.ReadPodV1OrDie(installerPodTemplate)
-		c.podsClient.Create(ctx, pod, metav1.CreateOptions{})
-	// Create(ctx context.Context, pod *corev1.Pod, opts metav1.CreateOptions) (*corev1.Pod, error)
-	// matchingPods, err := c.podLister.Pods(c.targetNamespace).List(c.getPluginPodSelector(kmsConfig))
-	// if err != nil {
-	// 	return err
-	// }
-	// if len(matchingPods) == 0 {
-	// 	// create config map, which will lead to static pod creation
-	// }
+		name := "kms-plugin-pod"
+		currentcm, err := c.configMapsClient.ConfigMaps(c.targetNamespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil && !kerrors.IsNotFound(err) {
+			return err
+		}
+		desiredcm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: c.targetNamespace,
+				// Labels: map[string]string{}, // TODO
+			},
+			Data: map[string]string{
+				"pod.yaml": "test-pod-yaml",
+			},
+		}
+		currentcmOutdated := false
+		if currentcm.Data["pod.yaml"] != desiredcm.Data["pod.yaml"] {
+			currentcmOutdated = true
+		}
+		if currentcmOutdated {
+			// ApplyConfigMap issues an extra Get on the configmaps api. What are the benefits of using it over
+			// a direct call to Create?
+			// if _, _, err := resourceapply.ApplyConfigMap(ctx, c.configMapsClient, c.eventRecorder, desiredcm); err != nil {
+			// 	return err
+			// }
+			if _, err := c.configMapsClient.ConfigMaps(c.targetNamespace).Create(ctx, desiredcm, metav1.CreateOptions{}); err != nil {
+				return err
+			}
+		}
 
 	// create aws plugin
 	// podManifest, err := kmsprovider.GenerateAWSProviderTemplate(
@@ -158,9 +178,13 @@ func (c *pluginController) sync(ctx context.Context, syncCtx factory.SyncContext
 	return nil
 }
 
-func (c *pluginController) getPluginPodSelector(kmsConfig *configv1.KMSConfig) labels.Selector {
-	provider := strings.ToLower(string(kmsConfig.Type))
+func (c *kmsPluginController) getPluginBaseName(kmsProvider configv1.KMSProviderType) string {
+	p := strings.ToLower(string(kmsProvider))
+	return fmt.Sprintf(kmsPluginPodBaseName, p)
+}
+
+func (c *kmsPluginController) getPluginPodSelector(kmsConfig *configv1.KMSConfig) labels.Selector {
 	return labels.Set{
-		"app": fmt.Sprintf(kmsPluginPodBaseName, provider),
+		"app": c.getPluginBaseName(kmsConfig.Type),
 	}.AsSelector()
 }

@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -14,6 +13,8 @@ import (
 	encryptiondeployer "github.com/openshift/library-go/pkg/operator/encryption/deployer"
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/openshift/library-go/pkg/operator/v1helpers"
+
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -25,14 +26,14 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func TestPluginController(t *testing.T) {
+func TestKMSPluginController(t *testing.T) {
 	testCases := []struct {
 		name            string
 		targetNamespace string
 		managementState operatorv1.ManagementState
 		apiserverConfig *configv1.APIServer
 		initialObjects  []runtime.Object
-		expectedError   error
+		syncError       error
 	}{
 		{
 			name:            "operator managed and kms plugin correctly configured",
@@ -67,7 +68,7 @@ func TestPluginController(t *testing.T) {
 			targetNamespace: "openshift-apiserver",
 			managementState: operatorv1.Managed,
 			apiserverConfig: nil,
-			expectedError: apierrors.NewNotFound(
+			syncError: apierrors.NewNotFound(
 				schema.GroupResource{Group: "config.openshift.io", Resource: "apiservers"},
 				"cluster",
 			),
@@ -127,7 +128,7 @@ func TestPluginController(t *testing.T) {
 				t.Fatalf("failed to get deployer: %s", err)
 			}
 
-			ctlr := NewPluginController(
+			ctlr := NewKMSPluginController(
 				"openshift-apiserver",
 				tc.targetNamespace,
 				provider,
@@ -139,36 +140,34 @@ func TestPluginController(t *testing.T) {
 				metav1.ListOptions{},
 				fakeApiServerInformer,
 				kubeInformers,
-				fakeKubeClient.CoreV1().Pods(tc.targetNamespace),
+				fakePodsGetter,
 				eventRecorder,
 			)
 			err = ctlr.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
 			gotError := err != nil
-			if !cmp.Equal(err, tc.expectedError) {
+			if !cmp.Equal(err, tc.syncError) {
 				if gotError {
-					t.Fatalf("expected PluginController.Sync error %q to match %q, but didn't", err, tc.expectedError)
+					t.Fatalf("expected PluginController.Sync error %q to match %q, but didn't", err, tc.syncError)
 				} else {
-					t.Fatal("Expected PluginController.Sync to return an error, got nil")
+					t.Fatal("expected PluginController.Sync to return an error, got nil")
 				}
 			}
 		})
 	}
 }
 
-func TestPluginControllerPodManagement(t *testing.T) {
+func TestKMSPluginControllerConfigMapManagement(t *testing.T) {
+	targetNamespace := "openshift-apiserver"
+	// kmsPluginNameHash := "123" // TODO
 	testCases := []struct {
 		name             string
-		targetNamespace  string
-		managementState  operatorv1.ManagementState
 		encryptionConfig configv1.APIServerEncryption
 		initialObjects   []runtime.Object
-		expectedError    error
-		actionMatcher    func(actions []ktesting.Action) (string, bool)
+		syncError        error
+		expectedActions  []ktesting.Action
 	}{
 		{
-			name:            "creates installer pod when kms static pod doesn't exist",
-			targetNamespace: "openshift-apiserver",
-			managementState: operatorv1.Managed,
+			name: "creates configmap for static pod when one does not already exist",
 			encryptionConfig: configv1.APIServerEncryption{
 				Type: configv1.EncryptionTypeKMS,
 				KMS: &configv1.KMSConfig{
@@ -179,20 +178,72 @@ func TestPluginControllerPodManagement(t *testing.T) {
 					},
 				},
 			},
-			actionMatcher: func(actions []ktesting.Action) (string, bool) {
-				if len(actions) != 1 {
-					return "expected installer pod to have been created, but no action was taken on fakeKubeClient", false
-				}
-				action := actions[0]
-				if !action.Matches("create", "pods") {
-					msg := fmt.Sprintf(
-						"expected controller sync to have taken action with verb: create on resource: pods, but got verb: %s on resource: %s",
-						action.GetVerb(), action.GetResource(),
-					)
-					return msg, false
-				}
-				return "", true
+			expectedActions: []ktesting.Action{
+				ktesting.ActionImpl{
+					Verb: "get",
+					Resource: schema.GroupVersionResource{
+						Group:    "",
+						Version:  "v1",
+						Resource: "configmaps",
+					},
+				},
+				ktesting.ActionImpl{
+					Verb: "create",
+					Resource: schema.GroupVersionResource{
+						Group:    "",
+						Version:  "v1",
+						Resource: "configmaps",
+					},
+				},
 			},
+		},
+		{
+			name: "does not create configmap for static pod when pod already exists and is up-to-date",
+			encryptionConfig: configv1.APIServerEncryption{
+				Type: configv1.EncryptionTypeKMS,
+				KMS: &configv1.KMSConfig{
+					Type: configv1.AWSKMSProvider,
+					AWS: &configv1.AWSKMSConfig{
+						Region: "us-east-1",
+						KeyARN: "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+					},
+				},
+			},
+			expectedActions: []ktesting.Action{
+				ktesting.ActionImpl{
+					Verb: "get",
+					Resource: schema.GroupVersionResource{
+						Group:    "",
+						Version:  "v1",
+						Resource: "configmaps",
+					},
+				},
+			},
+			initialObjects: []runtime.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "kms-plugin-pod",
+						Namespace: targetNamespace,
+					},
+					Data: map[string]string{
+						"pod.yaml": "test-pod-yaml",
+					},
+				},
+			},
+		},
+		{
+			name: "configmap creation errors",
+			encryptionConfig: configv1.APIServerEncryption{
+				Type: configv1.EncryptionTypeKMS,
+				KMS: &configv1.KMSConfig{
+					Type: configv1.AWSKMSProvider,
+					AWS: &configv1.AWSKMSConfig{
+						Region: "us-east-1",
+						KeyARN: "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+					},
+				},
+			},
+			syncError: apierrors.NewServiceUnavailable("Oops, something went wrong."),
 		},
 	}
 	for _, tc := range testCases {
@@ -204,29 +255,30 @@ func TestPluginControllerPodManagement(t *testing.T) {
 				},
 			}
 
-			var triggerStatusErrorFn func(string, *operatorv1.StaticPodOperatorStatus) error
-			if tc.expectedError != nil {
-				triggerStatusErrorFn = func(rv string, spec *operatorv1.StaticPodOperatorStatus) error {
-					fmt.Printf("triggerStatusErrorFn rv: %s -- spec %+v \n", rv, *spec)
-					return tc.expectedError
-				}
-			}
-
 			fakeOperatorClient := v1helpers.NewFakeStaticPodOperatorClient(
 				&operatorv1.StaticPodOperatorSpec{
 					OperatorSpec: operatorv1.OperatorSpec{
-						ManagementState: tc.managementState,
+						ManagementState: operatorv1.Managed,
 					},
 				},
 				&operatorv1.StaticPodOperatorStatus{},
-				triggerStatusErrorFn,
+				nil,
 				nil,
 			)
 
 			fakeKubeClient := fake.NewClientset(tc.initialObjects...)
-			kubeInformers := v1helpers.NewKubeInformersForNamespaces(fakeKubeClient, "openshift-config-managed", tc.targetNamespace)
+			fakeKubeClient.PrependReactor("create", "configmaps", func(action ktesting.Action) (bool, runtime.Object, error) {
+				if tc.syncError != nil {
+					return true, nil, tc.syncError
+				}
+				cm := action.(ktesting.CreateAction).GetObject().(*corev1.ConfigMap)
+				return true, cm, nil
+			})
+
+			kubeInformers := v1helpers.NewKubeInformersForNamespaces(fakeKubeClient, "openshift-config-managed", targetNamespace)
 			fakeSecretClient := fakeKubeClient.CoreV1()
 			fakePodsGetter := fakeKubeClient.CoreV1()
+			fakeConfigmapsGetter := fakeKubeClient.CoreV1()
 
 			fakeConfigClient := configv1clientfake.NewClientset(apiserverConfig)
 			fakeApiServerClient := fakeConfigClient.ConfigV1().APIServers()
@@ -239,16 +291,16 @@ func TestPluginControllerPodManagement(t *testing.T) {
 				},
 			)
 			deployer, err := encryptiondeployer.NewRevisionLabelPodDeployer(
-				"revision", tc.targetNamespace, kubeInformers, fakePodsGetter,
+				"revision", targetNamespace, kubeInformers, fakePodsGetter,
 				fakeSecretClient, encryptiondeployer.StaticPodNodeProvider{OperatorClient: fakeOperatorClient},
 			)
 			if err != nil {
 				t.Fatalf("failed to get deployer: %s", err)
 			}
 
-			ctlr := NewPluginController(
+			ctlr := NewKMSPluginController(
 				"openshift-apiserver",
-				tc.targetNamespace,
+				targetNamespace,
 				provider,
 				deployer,
 				alwaysFulfilledPreconditions,
@@ -258,19 +310,36 @@ func TestPluginControllerPodManagement(t *testing.T) {
 				metav1.ListOptions{},
 				fakeApiServerInformer,
 				kubeInformers,
-				fakeKubeClient.CoreV1().Pods(tc.targetNamespace),
+				fakeConfigmapsGetter,
 				eventRecorder,
 			)
 			err = ctlr.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
-			if err != nil {
-				t.Fatalf("unexpected sync error: %s", err)
+			gotError := err != nil
+			if !cmp.Equal(err, tc.syncError) {
+				if gotError {
+					t.Errorf("expected PluginController.Sync error %q to match %q, but didn't", err, tc.syncError)
+				} else {
+					t.Error("expected PluginController.Sync to return an error, got nil")
+				}
 			}
 
-			msg, passed := tc.actionMatcher(fakeKubeClient.Actions())
-			if !passed {
-				t.Fatal(msg)
+			if tc.expectedActions != nil {
+				gotActions := fakeKubeClient.Actions()
+				if len(tc.expectedActions) != len(gotActions) {
+					t.Logf("fakeKubeClient.Actions(): %+v", gotActions)
+					t.Fatalf("length of expected actions does not match length of fakeKubeClient.Actions(), expected %d but got %d",
+						len(tc.expectedActions), len(gotActions))
+				}
+				for i, action := range gotActions {
+					expectedAction := tc.expectedActions[i]
+					if action.GetResource() == expectedAction.GetResource() && action.GetVerb() == expectedAction.GetVerb() {
+						continue
+					}
+					t.Errorf("expected action %s:%s missing from fakeKubeClient actions",
+						expectedAction.GetVerb(), expectedAction.GetResource())
+				}
 			}
-
+			fakeKubeClient.ClearActions()
 			// _, status, _, _ := fakeOperatorClient.GetStaticPodOperatorState()
 			// degradedCondition := v1helpers.FindOperatorCondition(status.Conditions, kmsPluginControllerDegradedCondition)
 			// if gotError && degradedCondition.Status != operatorv1.ConditionTrue {

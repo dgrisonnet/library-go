@@ -1,4 +1,4 @@
-package kmsprovider
+package kmsplugin
 
 import (
 	"embed"
