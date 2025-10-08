@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -25,6 +26,17 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 )
+
+func fakePodTemplateBuilderFunc(targetHash, targetNamespace, image, keyID, region, listen string) (string, error) {
+	return fmt.Sprintf(
+		"targetHash: %s\ntargetNamespace: %s\nimage: %s\nkeyID: %s\nregion: %s\nlisten: %s\n",
+		targetHash, targetNamespace, image, keyID, region, listen,
+	), nil
+}
+
+func constantFakePodTemplateBuilderFunc(targetHash, targetNamespace, image, keyID, region, listen string) (string, error) {
+	return "test-pod-manifest", nil
+}
 
 func TestKMSPluginController(t *testing.T) {
 	testCases := []struct {
@@ -134,6 +146,7 @@ func TestKMSPluginController(t *testing.T) {
 				provider,
 				deployer,
 				alwaysFulfilledPreconditions,
+				fakePodTemplateBuilderFunc,
 				fakeApiServerClient,
 				fakeOperatorClient,
 				fakeSecretClient,
@@ -159,15 +172,18 @@ func TestKMSPluginController(t *testing.T) {
 func TestKMSPluginControllerConfigMapManagement(t *testing.T) {
 	targetNamespace := "openshift-apiserver"
 	// kmsPluginNameHash := "123" // TODO
+	constantFakePodManifest, _ := constantFakePodTemplateBuilderFunc("", "", "", "", "", "")
 	testCases := []struct {
 		name             string
 		encryptionConfig configv1.APIServerEncryption
 		initialObjects   []runtime.Object
 		syncError        error
 		expectedActions  []ktesting.Action
+		podTemplateFunc  kmsPluginPodTemplateBuilderFunc
 	}{
 		{
-			name: "creates configmap for static pod when one does not already exist",
+			name:            "creates configmap for static pod when one does not already exist",
+			podTemplateFunc: fakePodTemplateBuilderFunc,
 			encryptionConfig: configv1.APIServerEncryption{
 				Type: configv1.EncryptionTypeKMS,
 				KMS: &configv1.KMSConfig{
@@ -188,6 +204,14 @@ func TestKMSPluginControllerConfigMapManagement(t *testing.T) {
 					},
 				},
 				ktesting.ActionImpl{
+					Verb: "get",
+					Resource: schema.GroupVersionResource{
+						Group:    "",
+						Version:  "v1",
+						Resource: "configmaps",
+					},
+				},
+				ktesting.ActionImpl{
 					Verb: "create",
 					Resource: schema.GroupVersionResource{
 						Group:    "",
@@ -198,7 +222,8 @@ func TestKMSPluginControllerConfigMapManagement(t *testing.T) {
 			},
 		},
 		{
-			name: "does not create configmap for static pod when pod already exists and is up-to-date",
+			name:            "does not create configmap for static pod when pod already exists and is up-to-date",
+			podTemplateFunc: constantFakePodTemplateBuilderFunc,
 			encryptionConfig: configv1.APIServerEncryption{
 				Type: configv1.EncryptionTypeKMS,
 				KMS: &configv1.KMSConfig{
@@ -225,14 +250,66 @@ func TestKMSPluginControllerConfigMapManagement(t *testing.T) {
 						Name:      "kms-plugin-pod",
 						Namespace: targetNamespace,
 					},
-					Data: map[string]string{
-						"pod.yaml": "test-pod-yaml",
+					Data: map[string]string{ // TODO: it's better to feed the pod.yaml from the test body so we can use the test paramters as input.
+						"pod.yaml": constantFakePodManifest,
 					},
 				},
 			},
 		},
 		{
-			name: "configmap creation errors",
+			name:            "updates config map for static pod when current pod manifest differs from desired",
+			podTemplateFunc: fakePodTemplateBuilderFunc,
+			encryptionConfig: configv1.APIServerEncryption{
+				Type: configv1.EncryptionTypeKMS,
+				KMS: &configv1.KMSConfig{
+					Type: configv1.AWSKMSProvider,
+					AWS: &configv1.AWSKMSConfig{
+						Region: "us-east-1",
+						KeyARN: "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+					},
+				},
+			},
+			expectedActions: []ktesting.Action{
+				ktesting.ActionImpl{
+					Verb: "get",
+					Resource: schema.GroupVersionResource{
+						Group:    "",
+						Version:  "v1",
+						Resource: "configmaps",
+					},
+				},
+				ktesting.ActionImpl{
+					Verb: "get",
+					Resource: schema.GroupVersionResource{
+						Group:    "",
+						Version:  "v1",
+						Resource: "configmaps",
+					},
+				},
+				ktesting.ActionImpl{
+					Verb: "update",
+					Resource: schema.GroupVersionResource{
+						Group:    "",
+						Version:  "v1",
+						Resource: "configmaps",
+					},
+				},
+			},
+			initialObjects: []runtime.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "kms-plugin-pod",
+						Namespace: targetNamespace,
+					},
+					Data: map[string]string{
+						"pod.yaml": "stale-static-pod-manifest",
+					},
+				},
+			},
+		},
+		{
+			name:            "configmap creation errors",
+			podTemplateFunc: fakePodTemplateBuilderFunc,
 			encryptionConfig: configv1.APIServerEncryption{
 				Type: configv1.EncryptionTypeKMS,
 				KMS: &configv1.KMSConfig{
@@ -304,6 +381,7 @@ func TestKMSPluginControllerConfigMapManagement(t *testing.T) {
 				provider,
 				deployer,
 				alwaysFulfilledPreconditions,
+				tc.podTemplateFunc,
 				fakeApiServerClient,
 				fakeOperatorClient,
 				fakeSecretClient,

@@ -23,6 +23,8 @@ import (
 	"github.com/openshift/library-go/pkg/controller/factory"
 	"github.com/openshift/library-go/pkg/operator/encryption/statemachine"
 	"github.com/openshift/library-go/pkg/operator/events"
+	"github.com/openshift/library-go/pkg/operator/resource/resourceapply"
+	"github.com/openshift/library-go/pkg/operator/staticpod/kmsplugin"
 	operatorv1helpers "github.com/openshift/library-go/pkg/operator/v1helpers"
 )
 
@@ -31,6 +33,8 @@ const (
 
 	kmsPluginPodBaseName = "%s-kms-plugin"
 )
+
+type kmsPluginPodTemplateBuilderFunc func(targetHash, targetNamespace, image, keyID, region, listen string) (string, error)
 
 type kmsPluginController struct {
 	instanceName           string
@@ -46,15 +50,21 @@ type kmsPluginController struct {
 	deployer                 statemachine.Deployer
 	provider                 Provider
 	preconditionsFulfilledFn preconditionsFulfilled
+	podTemplateBuilderFunc   kmsPluginPodTemplateBuilderFunc
 	eventRecorder            events.Recorder
 }
 
+// NewKMSPluginController creates a new instance of the controller which manages
+// the config map used to manage static pods for the configured kms plugin.
+//
+// podTemplateBuilderFunc should be kmsplugin.GenerateAWSProviderTemplate outside of unit tests.
 func NewKMSPluginController(
 	instanceName string,
 	targetNamespace string,
 	provider Provider,
 	deployer statemachine.Deployer,
 	preconditionsFulfilledFn preconditionsFulfilled,
+	podTemplateBuilderFunc kmsPluginPodTemplateBuilderFunc,
 	apiserverClient configv1client.APIServerInterface,
 	operatorClient operatorv1helpers.OperatorClient,
 	secretClient corev1client.SecretsGetter,
@@ -76,7 +86,12 @@ func NewKMSPluginController(
 
 		provider:                 provider,
 		preconditionsFulfilledFn: preconditionsFulfilledFn,
+		podTemplateBuilderFunc:   podTemplateBuilderFunc,
 		eventRecorder:            eventRecorder,
+	}
+
+	if c.podTemplateBuilderFunc == nil {
+		c.podTemplateBuilderFunc = kmsplugin.GenerateAWSProviderTemplate
 	}
 
 	return factory.New().
@@ -134,29 +149,40 @@ func (c *kmsPluginController) sync(ctx context.Context, syncCtx factory.SyncCont
 		if err != nil && !kerrors.IsNotFound(err) {
 			return err
 		}
-		desiredcm := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: c.targetNamespace,
-				// Labels: map[string]string{}, // TODO
-			},
-			Data: map[string]string{
-				"pod.yaml": "test-pod-yaml",
-			},
+		desiredPodManifest, err := c.podTemplateBuilderFunc(
+			"hash-todo",
+			c.targetNamespace,
+			"quay.io/image/todo:latest",
+			kmsConfig.AWS.KeyARN,
+			kmsConfig.AWS.Region,
+			":8080",
+		)
+		if err != nil {
+			return err
 		}
 		currentcmOutdated := false
-		if currentcm.Data["pod.yaml"] != desiredcm.Data["pod.yaml"] {
+		if currentcm.Data["pod.yaml"] != desiredPodManifest {
 			currentcmOutdated = true
 		}
 		if currentcmOutdated {
+			desiredcm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: c.targetNamespace,
+					// Labels: map[string]string{}, // TODO
+				},
+				Data: map[string]string{
+					"pod.yaml": desiredPodManifest,
+				},
+			}
 			// ApplyConfigMap issues an extra Get on the configmaps api. What are the benefits of using it over
 			// a direct call to Create?
-			// if _, _, err := resourceapply.ApplyConfigMap(ctx, c.configMapsClient, c.eventRecorder, desiredcm); err != nil {
-			// 	return err
-			// }
-			if _, err := c.configMapsClient.ConfigMaps(c.targetNamespace).Create(ctx, desiredcm, metav1.CreateOptions{}); err != nil {
+			if _, _, err := resourceapply.ApplyConfigMap(ctx, c.configMapsClient, c.eventRecorder, desiredcm); err != nil {
 				return err
 			}
+			// if _, err := c.configMapsClient.ConfigMaps(c.targetNamespace).Create(ctx, desiredcm, metav1.CreateOptions{}); err != nil {
+			// 	return err
+			// }
 		}
 
 	// create aws plugin
