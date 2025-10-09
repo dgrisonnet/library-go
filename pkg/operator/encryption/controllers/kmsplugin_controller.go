@@ -57,7 +57,7 @@ type kmsPluginController struct {
 // NewKMSPluginController creates a new instance of the controller which manages
 // the config map used to manage static pods for the configured kms plugin.
 //
-// podTemplateBuilderFunc should be kmsplugin.GenerateAWSProviderTemplate outside of unit tests.
+// podTemplateBuilderFunc defaults to kmsplugin.GenerateAWSProviderTemplate when nil.
 func NewKMSPluginController(
 	instanceName string,
 	targetNamespace string,
@@ -74,7 +74,6 @@ func NewKMSPluginController(
 	configMapsClient corev1client.ConfigMapsGetter,
 	eventRecorder events.Recorder,
 ) factory.Controller {
-	podInformer := kubeInformersForNamespaces.InformersFor(targetNamespace).Core().V1().Pods()
 	c := kmsPluginController{
 		instanceName:           instanceName,
 		controllerInstanceName: factory.ControllerInstanceName(instanceName, "KMSPlugin"),
@@ -102,7 +101,6 @@ func NewKMSPluginController(
 			apiServerInformer.Informer(),
 			operatorClient.Informer(),
 			deployer,
-			podInformer.Informer(),
 		).ToController(
 		c.controllerInstanceName,
 		eventRecorder.WithComponentSuffix("kms-plugin-controller"),
@@ -175,28 +173,10 @@ func (c *kmsPluginController) sync(ctx context.Context, syncCtx factory.SyncCont
 					"pod.yaml": desiredPodManifest,
 				},
 			}
-			// ApplyConfigMap issues an extra Get on the configmaps api. What are the benefits of using it over
-			// a direct call to Create?
 			if _, _, err := resourceapply.ApplyConfigMap(ctx, c.configMapsClient, c.eventRecorder, desiredcm); err != nil {
 				return err
 			}
-			// if _, err := c.configMapsClient.ConfigMaps(c.targetNamespace).Create(ctx, desiredcm, metav1.CreateOptions{}); err != nil {
-			// 	return err
-			// }
 		}
-
-	// create aws plugin
-	// podManifest, err := kmsprovider.GenerateAWSProviderTemplate(
-	// 	"target-hash",
-	// 	c.targetNamespace,
-	// 	"quay.io/image/kms-plugin-placeholder",
-	// 	kmsConfig.AWS.KeyARN,
-	// 	kmsConfig.AWS.Region,
-	// 	":8080",
-	// )
-	// if err != nil {
-	// 	// handle
-	// }
 	default:
 		// error
 	}
