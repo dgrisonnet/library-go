@@ -21,7 +21,6 @@ import (
 	applyoperatorv1 "github.com/openshift/client-go/operator/applyconfigurations/operator/v1"
 
 	"github.com/openshift/library-go/pkg/controller/factory"
-	"github.com/openshift/library-go/pkg/operator/encryption/statemachine"
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/openshift/library-go/pkg/operator/resource/resourceapply"
 	"github.com/openshift/library-go/pkg/operator/staticpod/kmsplugin"
@@ -42,12 +41,10 @@ type kmsPluginController struct {
 	controllerInstanceName string
 
 	operatorClient   operatorv1helpers.OperatorClient
-	secretClient     corev1client.SecretsGetter
 	apiserverClient  configv1client.APIServerInterface
 	podLister        corev1lister.PodLister
 	configMapsClient corev1client.ConfigMapsGetter
 
-	deployer                 statemachine.Deployer
 	provider                 Provider
 	preconditionsFulfilledFn preconditionsFulfilled
 	podTemplateBuilderFunc   kmsPluginPodTemplateBuilderFunc
@@ -59,25 +56,20 @@ type kmsPluginController struct {
 //
 // podTemplateBuilderFunc defaults to kmsplugin.GenerateAWSProviderTemplate when nil.
 func NewKMSPluginController(
-	instanceName string,
 	targetNamespace string,
 	provider Provider,
-	deployer statemachine.Deployer,
 	preconditionsFulfilledFn preconditionsFulfilled,
 	podTemplateBuilderFunc kmsPluginPodTemplateBuilderFunc,
 	apiserverClient configv1client.APIServerInterface,
 	operatorClient operatorv1helpers.OperatorClient,
-	secretClient corev1client.SecretsGetter,
-	encryptionSecretSelector metav1.ListOptions,
 	apiServerInformer configv1informers.APIServerInformer,
 	kubeInformersForNamespaces operatorv1helpers.KubeInformersForNamespaces,
 	configMapsClient corev1client.ConfigMapsGetter,
 	eventRecorder events.Recorder,
 ) factory.Controller {
 	c := kmsPluginController{
-		instanceName:           instanceName,
-		controllerInstanceName: factory.ControllerInstanceName(instanceName, "KMSPlugin"),
 		targetNamespace:        targetNamespace,
+		controllerInstanceName: factory.ControllerInstanceName(targetNamespace, "KMSPlugin"),
 
 		operatorClient:   operatorClient,
 		apiserverClient:  apiserverClient,
@@ -98,9 +90,8 @@ func NewKMSPluginController(
 		WithControllerInstanceName(c.controllerInstanceName).
 		ResyncEvery(time.Minute).
 		WithInformers(
-			apiServerInformer.Informer(),
-			operatorClient.Informer(),
-			deployer,
+			apiServerInformer.Informer(), // watch for encryption configuration changes
+			operatorClient.Informer(),    // watch for management state changes
 		).ToController(
 		c.controllerInstanceName,
 		eventRecorder.WithComponentSuffix("kms-plugin-controller"),
@@ -108,6 +99,13 @@ func NewKMSPluginController(
 }
 
 func (c *kmsPluginController) sync(ctx context.Context, syncCtx factory.SyncContext) (err error) {
+	// TODO(fmissi):
+	//  * check plugin health (Status) and update conditions accordingly
+	//  * cleanup plugin resources if encryption config changes from KMS to a
+	//    different encryption provider, i.e. AESCBC
+	//  * provide means for key_controller to determine whether the KMS plugin pods are operational,
+	//    potentially via conditions, or maybe even via direct call to plugin Status.
+
 	// The status for this condition is intentionally omitted to ensure it's correctly set in each branch
 	degradedCondition := applyoperatorv1.OperatorCondition().
 		WithType(kmsPluginControllerDegradedCondition)

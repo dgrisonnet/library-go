@@ -11,6 +11,7 @@ import (
 	"github.com/openshift/library-go/pkg/operator/encryption/controllers/migrators"
 	"github.com/openshift/library-go/pkg/operator/encryption/encryptionconfig"
 	"github.com/openshift/library-go/pkg/operator/resourcesynccontroller"
+	"github.com/openshift/library-go/pkg/operator/staticpod/kmsplugin"
 
 	configv1client "github.com/openshift/client-go/config/clientset/versioned/typed/config/v1"
 	configv1informers "github.com/openshift/client-go/config/informers/externalversions/config/v1"
@@ -34,6 +35,7 @@ func NewControllers(
 	apiServerInformer configv1informers.APIServerInformer,
 	kubeInformersForNamespaces operatorv1helpers.KubeInformersForNamespaces,
 	secretsClient corev1.SecretsGetter,
+	configMapsClient corev1.ConfigMapsGetter,
 	eventRecorder events.Recorder,
 	resourceSyncer *resourcesynccontroller.ResourceSyncController,
 ) (Controllers, error) {
@@ -121,6 +123,18 @@ func NewControllers(
 			kubeInformersForNamespaces,
 			secretsClient,
 			encryptionSecretSelector,
+			eventRecorder,
+		),
+		controllers.NewKMSPluginController(
+			component,
+			provider,
+			encryptionEnabledChecker.PreconditionFulfilled,
+			kmsplugin.GenerateAWSProviderTemplate,
+			apiServerClient,
+			operatorClient,
+			apiServerInformer,
+			kubeInformersForNamespaces,
+			configMapsClient,
 			eventRecorder,
 		),
 	}, nil

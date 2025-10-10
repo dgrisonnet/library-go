@@ -1,14 +1,15 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: aws-kms-plugin-{{.TargetHash}}
+  name: kms-plugin-pod
   namespace: {{.TargetNamespace}}
   labels:
-    app: aws-kms-plugin
+    app: kms-plugin
+    kms-plugin: true
 spec:
   containers:
   - image: {{.ProviderImage}}
-    name: aws-kms-plugin
+    name: kms-plugin
     command:
     - /aws-kms-plugin
     - --key={{.KeyARN}}

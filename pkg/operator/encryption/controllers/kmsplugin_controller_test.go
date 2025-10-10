@@ -11,7 +11,6 @@ import (
 	configv1clientfake "github.com/openshift/client-go/config/clientset/versioned/fake"
 	configv1informers "github.com/openshift/client-go/config/informers/externalversions"
 	"github.com/openshift/library-go/pkg/controller/factory"
-	encryptiondeployer "github.com/openshift/library-go/pkg/operator/encryption/deployer"
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/openshift/library-go/pkg/operator/v1helpers"
 
@@ -116,8 +115,7 @@ func TestKMSPluginController(t *testing.T) {
 
 			fakeKubeClient := fake.NewClientset(tc.initialObjects...)
 			kubeInformers := v1helpers.NewKubeInformersForNamespaces(fakeKubeClient, "openshift-config-managed", tc.targetNamespace)
-			fakeSecretClient := fakeKubeClient.CoreV1()
-			fakePodsGetter := fakeKubeClient.CoreV1()
+			fakeConfigmapsGetter := fakeKubeClient.CoreV1()
 
 			fakeConfigClient := configv1clientfake.NewClientset()
 			if tc.apiserverConfig != nil {
@@ -132,31 +130,20 @@ func TestKMSPluginController(t *testing.T) {
 					{Group: "", Resource: "secrets"},
 				},
 			)
-			deployer, err := encryptiondeployer.NewRevisionLabelPodDeployer(
-				"revision", tc.targetNamespace, kubeInformers, fakePodsGetter,
-				fakeSecretClient, encryptiondeployer.StaticPodNodeProvider{OperatorClient: fakeOperatorClient},
-			)
-			if err != nil {
-				t.Fatalf("failed to get deployer: %s", err)
-			}
 
 			ctlr := NewKMSPluginController(
-				"openshift-apiserver",
 				tc.targetNamespace,
 				provider,
-				deployer,
 				alwaysFulfilledPreconditions,
 				fakePodTemplateBuilderFunc,
 				fakeApiServerClient,
 				fakeOperatorClient,
-				fakeSecretClient,
-				metav1.ListOptions{},
 				fakeApiServerInformer,
 				kubeInformers,
-				fakePodsGetter,
+				fakeConfigmapsGetter,
 				eventRecorder,
 			)
-			err = ctlr.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
+			err := ctlr.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
 			gotError := err != nil
 			if !cmp.Equal(err, tc.syncError) {
 				if gotError {
@@ -339,6 +326,20 @@ func TestKMSPluginControllerConfigMapManagement(t *testing.T) {
 					},
 				},
 				&operatorv1.StaticPodOperatorStatus{},
+				//	OperatorStatus: operatorv1.OperatorStatus{
+				//		// we need to set up proper conditions before the test starts because
+				//		// the controller calls UpdateStatus which calls UpdateOperatorStatus method which is unsupported (fake client) and throws an exception
+				//		Conditions: []operatorv1.OperatorCondition{
+				//			{
+				//				Type:   "EncryptionStateControllerDegraded",
+				//				Status: "False",
+				//			},
+				//		},
+				//	},
+				//	NodeStatuses: []operatorv1.NodeStatus{ // TODO: is this needed?
+				//		{NodeName: "node-1"},
+				//	},
+				//},
 				nil,
 				nil,
 			)
@@ -353,8 +354,6 @@ func TestKMSPluginControllerConfigMapManagement(t *testing.T) {
 			})
 
 			kubeInformers := v1helpers.NewKubeInformersForNamespaces(fakeKubeClient, "openshift-config-managed", targetNamespace)
-			fakeSecretClient := fakeKubeClient.CoreV1()
-			fakePodsGetter := fakeKubeClient.CoreV1()
 			fakeConfigmapsGetter := fakeKubeClient.CoreV1()
 
 			fakeConfigClient := configv1clientfake.NewClientset(apiserverConfig)
@@ -367,31 +366,19 @@ func TestKMSPluginControllerConfigMapManagement(t *testing.T) {
 					{Group: "", Resource: "secrets"},
 				},
 			)
-			deployer, err := encryptiondeployer.NewRevisionLabelPodDeployer(
-				"revision", targetNamespace, kubeInformers, fakePodsGetter,
-				fakeSecretClient, encryptiondeployer.StaticPodNodeProvider{OperatorClient: fakeOperatorClient},
-			)
-			if err != nil {
-				t.Fatalf("failed to get deployer: %s", err)
-			}
-
 			ctlr := NewKMSPluginController(
-				"openshift-apiserver",
 				targetNamespace,
 				provider,
-				deployer,
 				alwaysFulfilledPreconditions,
 				tc.podTemplateFunc,
 				fakeApiServerClient,
 				fakeOperatorClient,
-				fakeSecretClient,
-				metav1.ListOptions{},
 				fakeApiServerInformer,
 				kubeInformers,
 				fakeConfigmapsGetter,
 				eventRecorder,
 			)
-			err = ctlr.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
+			err := ctlr.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
 			gotError := err != nil
 			if !cmp.Equal(err, tc.syncError) {
 				if gotError {
