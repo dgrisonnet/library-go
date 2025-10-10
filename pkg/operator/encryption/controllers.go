@@ -34,11 +34,17 @@ func NewControllers(
 	apiServerClient configv1client.APIServerInterface,
 	apiServerInformer configv1informers.APIServerInformer,
 	kubeInformersForNamespaces operatorv1helpers.KubeInformersForNamespaces,
-	secretsClient corev1.SecretsGetter,
-	configMapsClient corev1.ConfigMapsGetter,
+	corev1Clients corev1.CoreV1Interface,
 	eventRecorder events.Recorder,
 	resourceSyncer *resourcesynccontroller.ResourceSyncController,
 ) (Controllers, error) {
+	var (
+		secretsClient    corev1.SecretsGetter
+		configMapsClient corev1.ConfigMapsGetter
+	)
+	secretsClient = corev1Clients
+	configMapsClient = corev1Clients
+
 	// avoid using the CachedSecretGetter as we need strong guarantees that our encryptionSecretSelector works
 	// otherwise we could see secrets from a different component (which will break our keyID invariants)
 	// this is fine in terms of performance since these controllers will be idle most of the time
