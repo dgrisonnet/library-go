@@ -6,7 +6,6 @@ import (
 )
 
 type awsProviderTemplate struct {
-	TargetHash      string
 	TargetNamespace string
 	ProviderImage   string
 	KeyARN          string
@@ -14,14 +13,13 @@ type awsProviderTemplate struct {
 	Listen          string
 }
 
-func GenerateAWSProviderTemplate(targetHash, targetNamespace, image, keyARN, region, listen string) (string, error) {
+func GenerateAWSProviderTemplate(targetNamespace, image, keyARN, region, listen string) (string, error) {
 	rawAWSProviderManifest, err := asset("assets/aws-encryption-provider-pod.yaml")
 	if err != nil {
 		return "", err
 	}
 
 	tmplVal := awsProviderTemplate{
-		TargetHash:      targetHash,
 		TargetNamespace: targetNamespace,
 		ProviderImage:   image,
 		KeyARN:          keyARN,

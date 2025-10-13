@@ -26,14 +26,14 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func fakePodTemplateBuilderFunc(targetHash, targetNamespace, image, keyID, region, listen string) (string, error) {
+func fakePodTemplateBuilderFunc(targetNamespace, image, keyID, region, listen string) (string, error) {
 	return fmt.Sprintf(
-		"targetHash: %s\ntargetNamespace: %s\nimage: %s\nkeyID: %s\nregion: %s\nlisten: %s\n",
-		targetHash, targetNamespace, image, keyID, region, listen,
+		"targetNamespace: %s\nimage: %s\nkeyID: %s\nregion: %s\nlisten: %s\n",
+		targetNamespace, image, keyID, region, listen,
 	), nil
 }
 
-func constantFakePodTemplateBuilderFunc(targetHash, targetNamespace, image, keyID, region, listen string) (string, error) {
+func constantFakePodTemplateBuilderFunc(targetNamespace, image, keyID, region, listen string) (string, error) {
 	return "test-pod-manifest", nil
 }
 
@@ -158,8 +158,7 @@ func TestKMSPluginController(t *testing.T) {
 
 func TestKMSPluginControllerConfigMapManagement(t *testing.T) {
 	targetNamespace := "openshift-apiserver"
-	// kmsPluginNameHash := "123" // TODO
-	constantFakePodManifest, _ := constantFakePodTemplateBuilderFunc("", "", "", "", "", "")
+	constantFakePodManifest, _ := constantFakePodTemplateBuilderFunc("", "", "", "", "")
 	testCases := []struct {
 		name             string
 		encryptionConfig configv1.APIServerEncryption

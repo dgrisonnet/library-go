@@ -30,10 +30,11 @@ import (
 const (
 	kmsPluginControllerDegradedCondition = "EncryptionKMSPluginControllerDegraded"
 
+	ksmPluginSocketPath  = "/var/run/kmsplugin/socket.sock"
 	kmsPluginPodBaseName = "%s-kms-plugin"
 )
 
-type kmsPluginPodTemplateBuilderFunc func(targetHash, targetNamespace, image, keyID, region, listen string) (string, error)
+type kmsPluginPodTemplateBuilderFunc func(targetNamespace, image, keyID, region, listen string) (string, error)
 
 type kmsPluginController struct {
 	instanceName           string
@@ -105,6 +106,7 @@ func (c *kmsPluginController) sync(ctx context.Context, syncCtx factory.SyncCont
 	//    different encryption provider, i.e. AESCBC
 	//  * provide means for key_controller to determine whether the KMS plugin pods are operational,
 	//    potentially via conditions, or maybe even via direct call to plugin Status.
+	//  * check KMSEncryptionProvider feature gate before doing stuff in this controller
 
 	// The status for this condition is intentionally omitted to ensure it's correctly set in each branch
 	degradedCondition := applyoperatorv1.OperatorCondition().
@@ -146,12 +148,11 @@ func (c *kmsPluginController) sync(ctx context.Context, syncCtx factory.SyncCont
 			return err
 		}
 		desiredPodManifest, err := c.podTemplateBuilderFunc(
-			"hash-todo",
 			c.targetNamespace,
 			"quay.io/image/todo:latest",
 			kmsConfig.AWS.KeyARN,
 			kmsConfig.AWS.Region,
-			":8080",
+			ksmPluginSocketPath,
 		)
 		if err != nil {
 			return err
