@@ -8,7 +8,7 @@ metadata:
     kms-plugin: true
 spec:
   containers:
-  - image: {{.ProviderImage}}
+  - image: {{.PluginImage}}
     name: kms-plugin
     command:
     - /aws-kms-plugin

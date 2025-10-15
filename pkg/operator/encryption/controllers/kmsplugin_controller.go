@@ -37,7 +37,6 @@ const (
 type kmsPluginPodTemplateBuilderFunc func(targetNamespace, image, keyID, region, listen string) (string, error)
 
 type kmsPluginController struct {
-	instanceName           string
 	targetNamespace        string
 	controllerInstanceName string
 
@@ -49,18 +48,21 @@ type kmsPluginController struct {
 	provider                 Provider
 	preconditionsFulfilledFn preconditionsFulfilled
 	podTemplateBuilderFunc   kmsPluginPodTemplateBuilderFunc
-	eventRecorder            events.Recorder
+	kmsPluginImage           string
+
+	eventRecorder events.Recorder
 }
 
 // NewKMSPluginController creates a new instance of the controller which manages
 // the config map used to manage static pods for the configured kms plugin.
 //
-// podTemplateBuilderFunc defaults to kmsplugin.GenerateAWSProviderTemplate when nil.
+// podTemplateBuilderFunc defaults to kmsplugin.GenerateAWSPluginTemplate when nil.
 func NewKMSPluginController(
 	targetNamespace string,
 	provider Provider,
 	preconditionsFulfilledFn preconditionsFulfilled,
 	podTemplateBuilderFunc kmsPluginPodTemplateBuilderFunc,
+	kmsPluginImage string,
 	apiserverClient configv1client.APIServerInterface,
 	operatorClient operatorv1helpers.OperatorClient,
 	apiServerInformer configv1informers.APIServerInformer,
@@ -79,11 +81,13 @@ func NewKMSPluginController(
 		provider:                 provider,
 		preconditionsFulfilledFn: preconditionsFulfilledFn,
 		podTemplateBuilderFunc:   podTemplateBuilderFunc,
-		eventRecorder:            eventRecorder,
+		kmsPluginImage:           kmsPluginImage,
+
+		eventRecorder: eventRecorder,
 	}
 
 	if c.podTemplateBuilderFunc == nil {
-		c.podTemplateBuilderFunc = kmsplugin.GenerateAWSProviderTemplate
+		c.podTemplateBuilderFunc = kmsplugin.GenerateAWSPluginTemplate
 	}
 
 	return factory.New().
@@ -149,7 +153,7 @@ func (c *kmsPluginController) sync(ctx context.Context, syncCtx factory.SyncCont
 		}
 		desiredPodManifest, err := c.podTemplateBuilderFunc(
 			c.targetNamespace,
-			"quay.io/image/todo:latest",
+			c.kmsPluginImage,
 			kmsConfig.AWS.KeyARN,
 			kmsConfig.AWS.Region,
 			ksmPluginSocketPath,

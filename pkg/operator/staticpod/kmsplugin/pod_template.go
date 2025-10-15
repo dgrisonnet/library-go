@@ -5,28 +5,28 @@ import (
 	"text/template"
 )
 
-type awsProviderTemplate struct {
+type awsPluginTemplate struct {
 	TargetNamespace string
-	ProviderImage   string
+	PluginImage     string
 	KeyARN          string
 	Region          string
 	Listen          string
 }
 
-func GenerateAWSProviderTemplate(targetNamespace, image, keyARN, region, listen string) (string, error) {
-	rawAWSProviderManifest, err := asset("assets/aws-encryption-provider-pod.yaml")
+func GenerateAWSPluginTemplate(targetNamespace, image, keyARN, region, listen string) (string, error) {
+	rawAWSPluginManifest, err := asset("assets/aws-kms-plugin-pod.yaml")
 	if err != nil {
 		return "", err
 	}
 
-	tmplVal := awsProviderTemplate{
+	tmplVal := awsPluginTemplate{
 		TargetNamespace: targetNamespace,
-		ProviderImage:   image,
+		PluginImage:     image,
 		KeyARN:          keyARN,
 		Region:          region,
 		Listen:          listen,
 	}
-	tmpl, err := template.New("aws-provider").Parse(string(rawAWSProviderManifest))
+	tmpl, err := template.New("aws-plugin").Parse(string(rawAWSPluginManifest))
 	if err != nil {
 		return "", err
 	}
