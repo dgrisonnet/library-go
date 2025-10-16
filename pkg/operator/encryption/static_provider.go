@@ -7,14 +7,20 @@ import (
 )
 
 // StaticEncryptionProvider always run the encryption controllers and returns a static list of resources to encrypt
-type StaticEncryptionProvider []schema.GroupResource
+type StaticEncryptionProvider struct {
+	resourceProvider ResourceProvider
+}
 
 var _ controllers.Provider = StaticEncryptionProvider{}
 
 func (p StaticEncryptionProvider) EncryptedGRs() []schema.GroupResource {
-	return p
+	return p.resourceProvider.EncryptedGRs()
 }
 
 func (p StaticEncryptionProvider) ShouldRunEncryptionControllers() (bool, error) {
 	return true, nil
+}
+
+func (p StaticEncryptionProvider) Name() string {
+	return "static"
 }
